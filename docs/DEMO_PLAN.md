@@ -23,6 +23,16 @@
 
 > 已实测：《FD11040711 冲击钻说明书》16 页转曲 PDF 全链路通过，AI 准确提取出
 > 零件编号(No.5/No.8/No.28)、BS 1362 保险丝、12 个月保修等手册细节。
+> 《FD11050751 角磨机》为单页 42×37 英寸巨幅折页 → 已支持高分辨率渲染 +
+> 自动切片(1500px 带 80px 重叠)并行识别，实测 9 块切片 5 分钟完成训练。
+
+### 演示机准备
+```bash
+brew install --cask orbstack   # 或 Docker Desktop
+cd MVP_SAAS && docker compose up -d --build   # 一键拉起全套(MySQL数据卷持久化)
+```
+入口：后台 http://localhost:3000 · H5 http://localhost:5173 · MailHog http://localhost:8025
+注意：backend/Dockerfile 已改用 eclipse-temurin:17-jre（alpine 无 arm64 版本）
 
 ### "训练"演示状态机
 `UPLOADED → READING(页 n/总 N) → GENERATING → DONE / FAILED`
@@ -47,7 +57,7 @@
 - [x] 后台登录页 + 演示账号 `demo@toolfix.com/demo123` + 拦截器鉴权（H5 诊断接口保持公开）
 - [x] H5 "Start Free Demo" 一键体验入口
 - [x] 种子数据替换为真实产品（FD11040711 冲击钻 / FD11050751 角磨机）
-- [ ] 预置一份已"训练完成"的产品数据（首次训练后数据留存即可，无需额外开发）
+- [x] 预置已"训练完成"的产品：角磨机 FD11050751（Docker MySQL 持久化，重启不丢）
 
 ### P3 顺手修的 Review 问题
 - [x] 上传文件名清洗（路径穿越）— DiagnosisController + ManualController

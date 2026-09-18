@@ -47,6 +47,8 @@ public class ManualTrainingService {
 
     private static final int VISION_WORKERS = 4;
     private static final int MAX_IMAGE_WIDTH = 1500;
+    private static final int TILE_OVERLAP = 80;
+    private static final int MAX_RENDER_WIDTH = 4200;
     private static final int MAX_PAGES = 40;
     private static final int TEXT_MODE_MIN_CHARS = 300;
 
@@ -89,7 +91,8 @@ public class ManualTrainingService {
             } else {
                 log.info("手册 {} 无法提取文字(转曲/扫描件, {}字)，走视觉通道", manualId,
                         rawText == null ? 0 : rawText.length());
-                digest = readByVision(doc, pages, manual);
+                List<String> images = renderManualImages(doc, pages);
+                digest = readImagesByVision(images, manual);
             }
             manual.setContentDigest(digest);
             manualRepository.save(manual);
@@ -124,40 +127,83 @@ public class ManualTrainingService {
         }
     }
 
-    /** 视觉通道：逐页渲染成图，4 路并发让视觉模型阅读，最后合并摘要 */
-    private String readByVision(PDDocument doc, int pages, Manual manual) throws Exception {
+    /**
+     * 渲染所有页为视觉模型可读的图片列表。
+     * 小页(如A4)整页一张；巨幅页(如折页说明书)自动切片(带重叠)，保证文字清晰度。
+     */
+    private List<String> renderManualImages(PDDocument doc, int pages) throws Exception {
         PDFRenderer renderer = new PDFRenderer(doc);
-        
-        // 1) 顺序预渲染所有页(PDFRenderer 非线程安全)
-        List<String> pageImages = new ArrayList<>();
+        List<String> images = new ArrayList<>();
         for (int p = 0; p < pages; p++) {
-            try {
-                pageImages.add(renderPageAsDataUri(renderer, p));
-            } catch (Exception e) {
-                log.warn("第 {} 页渲染失败: {}", p + 1, e.getMessage());
-                pageImages.add(null);
+            BufferedImage page = renderAdaptive(doc, renderer, p);
+            for (BufferedImage tile : tileIfLarge(page)) {
+                images.add(toDataUri(tile));
             }
         }
-        
-        // 2) 并发调视觉模型(页与页相互独立)
+        log.info("渲染完成: {} 页 -> {} 张图", pages, images.size());
+        return images;
+    }
+
+    /** 自适应渲染：普通页 110DPI；巨幅页限宽 4200px 控制内存 */
+    private BufferedImage renderAdaptive(PDDocument doc, PDFRenderer renderer, int pageIndex) throws Exception {
+        float baseScale = 110f / 72f;
+        float widthPt = doc.getPage(pageIndex).getBBox().getWidth();
+        float scale = Math.min(baseScale, MAX_RENDER_WIDTH / widthPt);
+        return renderer.renderImage(pageIndex, scale);
+    }
+
+    /** 超过 1500px 的图切片(带重叠防文字被截断)，否则原图返回 */
+    private List<BufferedImage> tileIfLarge(BufferedImage src) {
+        int w = src.getWidth(), h = src.getHeight();
+        if (w <= MAX_IMAGE_WIDTH && h <= MAX_IMAGE_WIDTH) {
+            return List.of(src);
+        }
+        int stepX = MAX_IMAGE_WIDTH - TILE_OVERLAP;
+        int stepY = MAX_IMAGE_WIDTH - TILE_OVERLAP;
+        int cols = (int) Math.ceil(w / (double) stepX);
+        int rows = (int) Math.ceil(h / (double) stepY);
+        List<BufferedImage> tiles = new ArrayList<>();
+        for (int r = 0; r < rows; r++) {
+            for (int c = 0; c < cols; c++) {
+                int x = Math.min(c * stepX, Math.max(0, w - MAX_IMAGE_WIDTH));
+                int y = Math.min(r * stepY, Math.max(0, h - MAX_IMAGE_WIDTH));
+                int tw = Math.min(MAX_IMAGE_WIDTH, w - x);
+                int th = Math.min(MAX_IMAGE_WIDTH, h - y);
+                tiles.add(src.getSubimage(x, y, tw, th));
+            }
+        }
+        return tiles;
+    }
+
+    private String toDataUri(BufferedImage image) throws Exception {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        ImageIO.write(image, "jpg", baos);
+        String b64 = Base64.getEncoder().encodeToString(baos.toByteArray());
+        log.info("图块编码完成: {}x{}, {}KB", image.getWidth(), image.getHeight(), b64.length() / 1024);
+        return "data:image/jpeg;base64," + b64;
+    }
+
+    /** 视觉通道：并发调视觉模型逐图阅读，最后合并摘要 */
+    private String readImagesByVision(List<String> images, Manual manual) throws Exception {
+        int total = images.size();
         ExecutorService pool = Executors.newFixedThreadPool(VISION_WORKERS);
         AtomicInteger completed = new AtomicInteger();
         List<Future<String>> futures = new ArrayList<>();
         
-        for (int p = 0; p < pages; p++) {
-            final String image = pageImages.get(p);
-            final int pageNo = p + 1;
+        for (int i = 0; i < total; i++) {
+            final String image = images.get(i);
+            final int idx = i + 1;
             futures.add(pool.submit(() -> {
-                if (image == null) return "";
                 String partial = llmService.chatVision(
-                        "这是某电动工具说明书的第" + pageNo + "页(共" + pages + "页)。" +
-                        "请把本页中对售后诊断有价值的内容完整转述：产品名称/型号/规格参数/电池信息、" +
-                        "安全警告、操作步骤、故障排查(Troubleshooting)、维护保养、保修条款。中文输出，保留数字与型号细节。",
+                        "这是某电动工具说明书的第" + idx + "/" + total + "部分(可能是大页折页手册的一个区域)。" +
+                        "请把此部分中对售后诊断有价值的内容完整转述：产品名称/型号/规格参数/电池信息、" +
+                        "安全警告、操作步骤、故障排查(Troubleshooting)、维护保养、保修条款。" +
+                        "中文输出，保留数字与型号细节。若本部分无有效内容请回答'本区域无文字内容'。",
                         List.of(image), 2500);
                 int done = completed.incrementAndGet();
-                updateStatus(manual, "READING", 5 + (int) (55.0 * done / pages),
-                        "AI 阅读进度: " + done + "/" + pages + " 页");
-                return "【第" + pageNo + "页】\n" + partial + "\n";
+                updateStatus(manual, "READING", 5 + (int) (55.0 * done / total),
+                        "AI 阅读进度: " + done + "/" + total + " 部分");
+                return "【第" + idx + "部分】\n" + partial + "\n";
             }));
         }
         
@@ -167,26 +213,13 @@ public class ManualTrainingService {
         }
         pool.shutdown();
         
-        // 3) 合并各页摘要
+        // 合并各部分摘要
         String merged = llmService.chatText(
-                "以下是逐页读取某电动工具说明书得到的原始摘要，请去重、合并成一份连贯的产品手册技术摘要，" +
+                "以下是分区域读取某电动工具说明书得到的原始摘要，请去重、合并成一份连贯的产品手册技术摘要，" +
                 "保留：名称/型号/规格/电池、安全警告要点、操作要点、故障排查条目、保修条款。中文输出。",
                 truncate(digest.toString(), 60000), 0.3, 4000);
         updateStatus(manual, "READING", 65, "手册内容整理完成");
         return merged;
-    }
-
-    private String renderPageAsDataUri(PDFRenderer renderer, int pageIndex) throws Exception {
-        BufferedImage image = renderer.renderImage(pageIndex, 110f / 72f);
-        if (image.getWidth() > MAX_IMAGE_WIDTH) {
-            float scale = (float) MAX_IMAGE_WIDTH / image.getWidth();
-            image = renderer.renderImage(pageIndex, 110f / 72f * scale);
-        }
-        ByteArrayOutputStream baos = new ByteArrayOutputStream();
-        ImageIO.write(image, "jpg", baos);
-        String b64 = Base64.getEncoder().encodeToString(baos.toByteArray());
-        log.info("手册页 {} 渲染完成: {}KB", pageIndex + 1, b64.length() / 1024);
-        return "data:image/jpeg;base64," + b64;
     }
 
     private String buildGenerationSystemPrompt() {
