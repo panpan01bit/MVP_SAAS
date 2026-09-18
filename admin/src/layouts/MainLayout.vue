@@ -50,15 +50,19 @@
         <div class="header-title">
           {{ pageTitle }}
         </div>
-        <el-badge :value="transferredCount" :hidden="transferredCount === 0" type="danger">
-          <el-button 
-            type="danger" 
-            :icon="Bell" 
-            @click="showTransferred" 
-            circle 
-            class="notification-btn"
-          />
-        </el-badge>
+        <div style="display:flex; align-items:center; gap:16px; margin-left:auto;">
+          <span class="admin-user">{{ adminEmail }}</span>
+          <el-button text type="info" @click="handleLogout">退出登录</el-button>
+          <el-badge :value="transferredCount" :hidden="transferredCount === 0" type="danger">
+            <el-button 
+              type="danger" 
+              :icon="Bell" 
+              @click="showTransferred" 
+              circle 
+              class="notification-btn"
+            />
+          </el-badge>
+        </div>
       </el-header>
       
       <el-main class="main-content">
@@ -78,6 +82,13 @@ const route = useRoute()
 const router = useRouter()
 
 const transferredCount = ref(0)
+const adminEmail = ref(localStorage.getItem('toolfix_admin') || 'admin')
+
+const handleLogout = async () => {
+  try { await api.auth.logout() } catch (e) { /* 忽略 */ }
+  localStorage.removeItem('toolfix_admin')
+  router.push('/login')
+}
 
 const activeMenu = computed(() => route.path)
 

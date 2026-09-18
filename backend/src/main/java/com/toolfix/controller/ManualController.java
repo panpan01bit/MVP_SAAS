@@ -5,7 +5,7 @@ import com.toolfix.domain.Product;
 import com.toolfix.dto.ApiResponse;
 import com.toolfix.repository.ManualRepository;
 import com.toolfix.repository.ProductRepository;
-import com.toolfix.service.MockManualParsingService;
+import com.toolfix.service.ManualTrainingService;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -31,7 +31,7 @@ public class ManualController {
     
     private final ManualRepository manualRepository;
     private final ProductRepository productRepository;
-    private final MockManualParsingService manualParsingService;
+    private final ManualTrainingService manualTrainingService;
     
     @Value("${toolfix.storage.upload-dir}")
     private String uploadDir;
@@ -79,7 +79,8 @@ public class ManualController {
         try {
             Files.createDirectories(Paths.get(uploadDir));
             
-            String fileName = UUID.randomUUID().toString() + "_" + file.getOriginalFilename();
+            String safeName = sanitizeFileName(file.getOriginalFilename());
+            String fileName = UUID.randomUUID().toString() + "_" + safeName;
             Path filePath = Paths.get(uploadDir, fileName);
             file.transferTo(filePath.toFile());
             
@@ -89,6 +90,9 @@ public class ManualController {
             manual.setStoredFileName(filePath.toString());
             manual.setFileSize(file.getSize());
             manual.setStatus(Manual.ManualStatus.UNCONFIRMED);
+            manual.setParseStatus("UPLOADED");
+            manual.setParseProgress(0);
+            manual.setParseMessage("已上传，等待 AI 训练...");
             
             manual.setExtractedSafetyWarnings("Processing...");
             manual.setExtractedWarrantyTerms("Processing...");
@@ -98,11 +102,11 @@ public class ManualController {
             product.setHasManual(true);
             productRepository.save(product);
             
-            manualParsingService.parseManualAsync(manual.getId());
+            manualTrainingService.trainAsync(manual.getId());
             
-            log.info("Manual uploaded for product: {}, file: {}", productId, fileName);
+            log.info("Manual uploaded for product: {}, file: {}, AI training started", productId, fileName);
             
-            return ApiResponse.success("Manual uploaded successfully, parsing in progress", manual);
+            return ApiResponse.success("Manual uploaded, AI training in progress", manual);
             
         } catch (IOException e) {
             log.error("Failed to upload manual", e);
@@ -186,6 +190,13 @@ public class ManualController {
         manualRepository.delete(manual);
         
         return ApiResponse.success("Manual deleted successfully", null);
+    }
+    
+    /** 清洗上传文件名，防路径穿越 */
+    private String sanitizeFileName(String original) {
+        if (original == null || original.isBlank()) return "manual.pdf";
+        String name = Paths.get(original).getFileName().toString();
+        return name.replaceAll("[^a-zA-Z0-9._-]", "_");
     }
     
     @Data

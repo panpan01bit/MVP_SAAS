@@ -203,7 +203,7 @@ const submitFeedback = async (thumbsUp) => {
   showFeedback.value = false
   
   try {
-    await api.diagnosis.feedback(sessionUuid, thumbsUp)
+    await api.diagnosis.feedback(sessionUuid, token, thumbsUp)
     
     if (thumbsUp) {
       showDialog({

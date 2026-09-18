@@ -20,6 +20,8 @@ public class Shop extends BaseEntity {
     @Column(nullable = false)
     private String shopName;
     
+    /** Shopify 访问令牌，绝不通过 API 下发 */
+    @com.fasterxml.jackson.annotation.JsonIgnore
     @Column(nullable = false)
     private String accessToken;
     

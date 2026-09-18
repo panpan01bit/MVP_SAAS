@@ -39,8 +39,9 @@ export default {
         headers: { 'Content-Type': 'multipart/form-data' }
       })
     },
-    feedback: (sessionUuid, thumbsUp) => api.post(`/diagnosis/${sessionUuid}/feedback`, { thumbsUp }),
-    resolve: (sessionUuid, resolved) => api.post(`/diagnosis/${sessionUuid}/resolve`, { resolved }),
+    feedback: (sessionUuid, token, thumbsUp) => api.post(`/diagnosis/${sessionUuid}/feedback`, { thumbsUp }, { params: { token } }),
+    resolve: (sessionUuid, token, resolved) => api.post(`/diagnosis/${sessionUuid}/resolve`, { resolved }, { params: { token } }),
+    createDemoSession: () => api.post('/diagnosis/demo-session'),
     getSession: (sessionUuid) => api.get(`/sessions/uuid/${sessionUuid}`)
   }
 }

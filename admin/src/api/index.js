@@ -17,15 +17,29 @@ api.interceptors.response.use(
       console.warn('Backend not available (expected on GitHub Pages demo)')
       return Promise.resolve({
         success: false,
+        backendDown: true,
         message: 'Backend API not hosted on GitHub Pages',
         data: null
       })
+    }
+    // 401: 回登录页（登录接口自身除外）
+    if (error.response?.status === 401 && !error.config?.url?.includes('/auth/login')) {
+      localStorage.removeItem('toolfix_admin')
+      if (!window.location.pathname.endsWith('/login')) {
+        window.location.href = (import.meta.env.BASE_URL || '/') + 'login'
+      }
     }
     return Promise.reject(error)
   }
 )
 
 export default {
+  auth: {
+    login: (email, password) => api.post('/auth/login', { email, password }),
+    logout: () => api.post('/auth/logout'),
+    me: () => api.get('/auth/me')
+  },
+  
   shops: {
     getAll: () => api.get('/shops'),
     connect: (shopDomain) => api.post('/shops/connect/init', { shopDomain }),

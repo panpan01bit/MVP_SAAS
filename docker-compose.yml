@@ -48,17 +48,21 @@ services:
     container_name: toolfix-backend
     ports:
       - "8080:8080"
+    env_file:
+      - .env
     environment:
       SPRING_PROFILES_ACTIVE: docker
       MYSQL_HOST: mysql
       MYSQL_PORT: 3306
-      MYSQL_DATABASE: toolfix
-      MYSQL_USER: toolfix
-      MYSQL_PASSWORD: toolfix123
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-toolfix}
+      MYSQL_USER: ${MYSQL_USER:-toolfix}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-toolfix123}
       REDIS_HOST: redis
       REDIS_PORT: 6379
       MAIL_HOST: mailhog
       MAIL_PORT: 1025
+      # 演示全链路：H5 地址指向容器映射端口
+      H5_BASE_URL: ${H5_BASE_URL:-http://localhost:5173}
     depends_on:
       mysql:
         condition: service_healthy

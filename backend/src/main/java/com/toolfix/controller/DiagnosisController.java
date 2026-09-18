@@ -36,7 +36,7 @@ public class DiagnosisController {
     private final KnowledgeBaseRepository knowledgeBaseRepository;
     private final SecurityService securityService;
     private final HazardDetectionService hazardDetectionService;
-    private final MockAIDiagnosisService aiDiagnosisService;
+    private final AiDiagnosisService aiDiagnosisService;
     private final NotificationService notificationService;
     
     @Value("${toolfix.storage.upload-dir}")
@@ -44,6 +44,9 @@ public class DiagnosisController {
     
     @Value("${toolfix.ai.max-conversation-rounds}")
     private int maxConversationRounds;
+    
+    @Value("${toolfix.links.h5-base-url}")
+    private String h5BaseUrl;
     
     @PostMapping("/create-session")
     public ApiResponse<SessionCreationResponse> createSession(@RequestBody CreateSessionRequest request) {
@@ -71,11 +74,57 @@ public class DiagnosisController {
         
         session = sessionRepository.save(session);
         
-        String secureLink = securityService.buildSecureLink("http://localhost:5173", sessionUuid, token);
+        String secureLink = securityService.buildSecureLink(h5BaseUrl, sessionUuid, token);
         
         log.info("Diagnosis session created: {} for order: {}", sessionUuid, request.getOrderId());
         
         return ApiResponse.success(new SessionCreationResponse(session.getId(), sessionUuid, secureLink, expiryTime));
+    }
+    
+    /**
+     * H5 一键体验：自动创建绑定演示产品的会话，返回带 token 的链接参数。
+     * 公开接口 —— 无需真实订单。
+     */
+    @PostMapping("/demo-session")
+    public ApiResponse<DemoSessionResponse> createDemoSession() {
+        List<Product> products = productRepository.findAll();
+        Product product = products.stream()
+                .filter(p -> Boolean.TRUE.equals(p.getHasManual()))
+                .findFirst()
+                .orElse(products.stream().findFirst()
+                        .orElseThrow(() -> new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "No demo product seeded yet")));
+        Shop shop = product.getShop();
+        
+        String sessionUuid = securityService.generateSessionUuid();
+        LocalDateTime expiryTime = securityService.calculateExpiryTime();
+        String token = securityService.generateHmacToken(sessionUuid, expiryTime);
+        
+        DiagnosisSession session = new DiagnosisSession();
+        session.setSessionUuid(sessionUuid);
+        session.setSecureToken(token);
+        session.setExpiryTime(expiryTime);
+        session.setShop(shop);
+        session.setProduct(product);
+        session.setShopifyOrderId("DEMO-" + System.currentTimeMillis());
+        session.setCustomerEmail("demo-customer@example.com");
+        session.setCustomerName("Demo Customer");
+        session.setStatus(DiagnosisSession.SessionStatus.IN_PROGRESS);
+        session.setRoundCount(0);
+        session = sessionRepository.save(session);
+        
+        log.info("Demo session created: {} for product: {}", sessionUuid, product.getSku());
+        return ApiResponse.success(new DemoSessionResponse(sessionUuid, token,
+                securityService.buildSecureLink(h5BaseUrl, sessionUuid, token),
+                product.getProductName()));
+    }
+    
+    @Data
+    @AllArgsConstructor
+    public static class DemoSessionResponse {
+        private String sessionUuid;
+        private String token;
+        private String secureLink;
+        private String productName;
     }
     
     @GetMapping("/{sessionUuid}/validate")
@@ -119,6 +168,18 @@ public class DiagnosisController {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Invalid token");
         }
         
+        if (securityService.isExpired(session.getExpiryTime())) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Link has expired");
+        }
+        
+        // 已转人工/已解决的会话不再进 AI 流程，避免与人工回复撞车
+        if (session.getStatus() == DiagnosisSession.SessionStatus.TRANSFERRED
+                || session.getStatus() == DiagnosisSession.SessionStatus.RESOLVED
+                || session.getStatus() == DiagnosisSession.SessionStatus.CLOSED) {
+            return ApiResponse.error("This session has been " + session.getStatus().name().toLowerCase()
+                    + ". Our support team will follow up.");
+        }
+        
         if (session.getRoundCount() >= maxConversationRounds) {
             return ApiResponse.error("Maximum conversation rounds reached. Transferring to human support.");
         }
@@ -148,42 +209,48 @@ public class DiagnosisController {
         
         Manual manual = manualRepository.findByProduct(session.getProduct()).orElse(null);
         
-        MockAIDiagnosisService.DiagnosisResponse aiResponse = aiDiagnosisService.diagnose(
+        AiDiagnosisService.DiagnosisResponse aiResponse = aiDiagnosisService.diagnose(
             session, message, conversationHistory, manual);
         
-        session.setRoundCount(aiResponse.getRoundNumber());
-        session.setFinalConfidence(aiResponse.getConfidence());
+        session.setRoundCount(aiResponse.roundNumber());
+        session.setFinalConfidence(aiResponse.confidence());
         
         Message assistantMessage = new Message();
         assistantMessage.setSession(session);
         assistantMessage.setRole(Message.MessageRole.ASSISTANT);
-        assistantMessage.setContent(aiResponse.getMessage());
-        assistantMessage.setRoundNumber(aiResponse.getRoundNumber());
+        assistantMessage.setContent(aiResponse.message());
+        assistantMessage.setRoundNumber(aiResponse.roundNumber());
         messageRepository.save(assistantMessage);
         
         ChatResponse chatResponse = new ChatResponse();
-        chatResponse.setMessage(aiResponse.getMessage());
-        chatResponse.setRoundNumber(aiResponse.getRoundNumber());
-        chatResponse.setConfidence(aiResponse.getConfidence());
-        chatResponse.setMaxRoundsReached(aiResponse.getRoundNumber() >= maxConversationRounds);
+        chatResponse.setMessage(aiResponse.message());
+        chatResponse.setRoundNumber(aiResponse.roundNumber());
+        chatResponse.setConfidence(aiResponse.confidence());
+        chatResponse.setMaxRoundsReached(aiResponse.roundNumber() >= maxConversationRounds);
         
-        if (aiResponse.getDecision() == MockAIDiagnosisService.DiagnosisDecision.FALSE_FAULT_GUIDE) {
+        if (aiResponse.decision() == MockAIDiagnosisService.DiagnosisDecision.FALSE_FAULT_GUIDE) {
             KnowledgeBase knowledge = knowledgeBaseRepository.findActiveKnowledgeForSku(session.getProduct().getSku())
                 .stream()
-                .filter(kb -> kb.getScenarioName().equalsIgnoreCase(aiResponse.getMatchedScenario()))
+                .filter(kb -> kb.getScenarioName().equalsIgnoreCase(aiResponse.matchedScenario()))
                 .findFirst()
                 .orElse(null);
             
             if (knowledge != null) {
-                String guideUrl = "http://localhost:5173/guide/" + knowledge.getGuidePageSlug();
+                String guideUrl = h5BaseUrl + "/guide/" + knowledge.getGuidePageSlug();
                 session.setGuidePageUrl(guideUrl);
                 session.setStatus(DiagnosisSession.SessionStatus.AWAITING_FEEDBACK);
                 session.setOutcome(DiagnosisSession.SessionOutcome.FALSE_FAULT_INTERCEPTED);
                 
                 chatResponse.setGuideUrl(guideUrl);
                 chatResponse.setNeedsTransfer(false);
+            } else {
+                // 知识库未命中：回退为转人工，避免客户拿不到指南后卡死
+                log.warn("FALSE_FAULT_GUIDE matched scenario '{}' but no KB entry for SKU {}", 
+                        aiResponse.matchedScenario(), session.getProduct().getSku());
+                handleTransfer(session, "Guide not available for matched scenario", false);
+                chatResponse.setNeedsTransfer(true);
             }
-        } else if (aiResponse.getDecision() == MockAIDiagnosisService.DiagnosisDecision.TRANSFER_TO_HUMAN) {
+        } else if (aiResponse.decision() == MockAIDiagnosisService.DiagnosisDecision.TRANSFER_TO_HUMAN) {
             handleTransfer(session, "AI diagnosis recommends human support", false);
             chatResponse.setNeedsTransfer(true);
         }
@@ -263,7 +330,7 @@ public class DiagnosisController {
             
             for (MultipartFile image : images) {
                 if (!image.isEmpty()) {
-                    String fileName = UUID.randomUUID().toString() + "_" + image.getOriginalFilename();
+                    String fileName = UUID.randomUUID().toString() + "_" + sanitizeFileName(image.getOriginalFilename());
                     Path filePath = Paths.get(uploadDir, "images", fileName);
                     image.transferTo(filePath.toFile());
                     imageUrls.add("/uploads/images/" + fileName);
@@ -276,13 +343,25 @@ public class DiagnosisController {
         return imageUrls;
     }
     
+    /** 清洗上传文件名，防路径穿越（去掉目录部分与危险字符） */
+    private String sanitizeFileName(String original) {
+        if (original == null || original.isBlank()) return "upload";
+        String name = Paths.get(original).getFileName().toString();
+        return name.replaceAll("[^a-zA-Z0-9._-]", "_");
+    }
+    
     @PostMapping("/{sessionUuid}/feedback")
     public ApiResponse<Void> submitFeedback(
             @PathVariable String sessionUuid,
+            @RequestParam String token,
             @RequestBody FeedbackRequest request) {
         
         DiagnosisSession session = sessionRepository.findBySessionUuid(sessionUuid)
-            .orElseThrow(() -> new RuntimeException("Session not found"));
+            .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Session not found"));
+        
+        if (!securityService.validateHmacToken(sessionUuid, session.getExpiryTime(), token)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Invalid token");
+        }
         
         session.setThumbsUp(request.isThumbsUp());
         
@@ -299,10 +378,15 @@ public class DiagnosisController {
     @PostMapping("/{sessionUuid}/resolve")
     public ApiResponse<Void> markResolved(
             @PathVariable String sessionUuid,
+            @RequestParam String token,
             @RequestBody ResolveRequest request) {
         
         DiagnosisSession session = sessionRepository.findBySessionUuid(sessionUuid)
-            .orElseThrow(() -> new RuntimeException("Session not found"));
+            .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Session not found"));
+        
+        if (!securityService.validateHmacToken(sessionUuid, session.getExpiryTime(), token)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Invalid token");
+        }
         
         session.setResolved(request.isResolved());
         

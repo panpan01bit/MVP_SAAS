@@ -59,9 +59,22 @@ spring:
 
 # Application Configuration
 toolfix:
+  links:
+    # H5 前端地址（生成诊断链接用，docker 环境由 compose 注入）
+    h5-base-url: ${H5_BASE_URL:http://localhost:5173}
   security:
     hmac-secret: ${HMAC_SECRET:toolfix-super-secret-key-for-demo-only-change-in-production}
     link-expiry-days: 7
+    # 后台演示账号
+    demo-admin-email: ${DEMO_ADMIN_EMAIL:demo@toolfix.com}
+    demo-admin-password: ${DEMO_ADMIN_PASSWORD:demo123}
+  llm:
+    # 留空 api-key 时自动降级为 Mock 模式
+    base-url: ${LLM_BASE_URL:https://open.bigmodel.cn/api/coding/paas/v4}
+    api-key: ${LLM_API_KEY:}
+    vision-model: ${LLM_MODEL:glm-4.5v}
+    text-model: ${LLM_TEXT_MODEL:glm-4.6}
+    disable-thinking: ${LLM_DISABLE_THINKING:true}
   
   ai:
     mock-enabled: true

@@ -140,11 +140,20 @@ public class SessionController {
             stats.put("hazardCount", hazards);
             stats.put("interceptRate", totalSessions > 0 ? (double) intercepted / totalSessions * 100 : 0);
         } else {
-            stats.put("totalSessions", sessionRepository.count());
-            stats.put("interceptedCount", 0);
-            stats.put("transferredCount", 0);
-            stats.put("hazardCount", 0);
-            stats.put("interceptRate", 0);
+            // 全店铺统计（不限定 shopId）
+            long totalSessions = sessionRepository.countByCreatedAtAfter(last30Days);
+            long intercepted = sessionRepository.countByOutcomeAndCreatedAtAfter(
+                DiagnosisSession.SessionOutcome.FALSE_FAULT_INTERCEPTED, last30Days);
+            long transferred = sessionRepository.countByOutcomeAndCreatedAtAfter(
+                DiagnosisSession.SessionOutcome.TRANSFERRED_TO_HUMAN, last30Days);
+            long hazards = sessionRepository.countByOutcomeAndCreatedAtAfter(
+                DiagnosisSession.SessionOutcome.HAZARD_DETECTED, last30Days);
+            
+            stats.put("totalSessions", totalSessions);
+            stats.put("interceptedCount", intercepted);
+            stats.put("transferredCount", transferred);
+            stats.put("hazardCount", hazards);
+            stats.put("interceptRate", totalSessions > 0 ? (double) intercepted / totalSessions * 100 : 0);
         }
         
         return ApiResponse.success(stats);

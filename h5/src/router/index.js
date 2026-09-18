@@ -2,6 +2,11 @@ import { createRouter, createWebHistory } from 'vue-router'
 
 const routes = [
   {
+    path: '/',
+    name: 'DemoEntry',
+    component: () => import('../views/DemoEntry.vue')
+  },
+  {
     path: '/diagnosis/:sessionUuid',
     name: 'Diagnosis',
     component: () => import('../views/Diagnosis.vue')

@@ -43,4 +43,11 @@ public interface DiagnosisSessionRepository extends JpaRepository<DiagnosisSessi
         @Param("outcome") DiagnosisSession.SessionOutcome outcome,
         @Param("startDate") LocalDateTime startDate
     );
+    
+    Long countByCreatedAtAfter(LocalDateTime startDate);
+    
+    Long countByOutcomeAndCreatedAtAfter(
+        DiagnosisSession.SessionOutcome outcome,
+        LocalDateTime startDate
+    );
 }

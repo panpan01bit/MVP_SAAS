@@ -2,6 +2,7 @@ package com.toolfix.config;
 
 import com.toolfix.domain.*;
 import com.toolfix.repository.*;
+import com.toolfix.service.HazardDetectionService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.CommandLineRunner;
@@ -19,6 +20,7 @@ public class DataSeeder implements CommandLineRunner {
     private final KnowledgeBaseRepository knowledgeBaseRepository;
     private final ShopRepository shopRepository;
     private final ProductRepository productRepository;
+    private final HazardDetectionService hazardDetectionService;
     
     @Override
     public void run(String... args) {
@@ -33,6 +35,10 @@ public class DataSeeder implements CommandLineRunner {
         if (shopRepository.count() == 0) {
             seedDemoShopAndProducts();
         }
+        
+        // 关键修复：拦截器缓存在 @PostConstruct 时早于本播种器执行，
+        // 首次启动会加载到 0 个关键词导致高危拦截静默失效，这里强制刷新。
+        hazardDetectionService.refreshKeywords();
         
         log.info("Data seeding completed");
     }
@@ -207,10 +213,10 @@ public class DataSeeder implements CommandLineRunner {
         shop.setOwnerEmail("demo@toolfix.example");
         shop = shopRepository.save(shop);
         
+        // 真实产品：与演示手册一一对应
         List<Product> products = Arrays.asList(
-            createProduct(shop, "TD-20V-DRILL-001", "20V Cordless Drill/Driver", "TD-2001", "20V", "Lithium-ion"),
-            createProduct(shop, "TD-18V-IMPACT-001", "18V Impact Driver", "TD-1801", "18V", "Lithium-ion"),
-            createProduct(shop, "TD-20V-SAW-001", "20V Circular Saw", "TD-2002", "20V", "Lithium-ion")
+            createProduct(shop, "FD11040711", "Impact Drill 冲击钻 FD11040711", "FD11040711", "21V", "Lithium-ion"),
+            createProduct(shop, "FD11050751", "Angle Grinder 角磨机 FD11050751", "FD11050751", "21V", "Lithium-ion")
         );
         
         productRepository.saveAll(products);
@@ -226,10 +232,10 @@ public class DataSeeder implements CommandLineRunner {
         product.setModel(model);
         product.setBatteryVoltage(voltage);
         product.setBatteryType(batteryType);
-        product.setRatedPower("600W");
+        product.setRatedPower("800W");
         product.setRatedSpeed("0-1500 RPM");
-        product.setCompatibleBatteryModels("DCB200, DCB204, DCB206");
-        product.setKeyComponentCodes("Motor: M20-001, Chuck: C13-002");
+        product.setCompatibleBatteryModels("21V Lithium-ion series");
+        product.setKeyComponentCodes("Motor, Chuck/Guard, Switch");
         product.setHasManual(false);
         return product;
     }

@@ -19,6 +19,8 @@ public class DiagnosisSession extends BaseEntity {
     @Column(nullable = false, unique = true)
     private String sessionUuid;
     
+    /** HMAC 访问令牌，绝不通过 API 下发 */
+    @com.fasterxml.jackson.annotation.JsonIgnore
     @Column(nullable = false)
     private String secureToken;
     
